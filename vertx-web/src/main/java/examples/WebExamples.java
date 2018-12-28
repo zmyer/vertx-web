@@ -10,9 +10,11 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.AuthProvider;
+import io.vertx.ext.auth.KeyStoreOptions;
 import io.vertx.ext.auth.User;
 import io.vertx.ext.auth.jwt.JWTAuth;
-import io.vertx.ext.auth.jwt.JWTOptions;
+import io.vertx.ext.auth.jwt.JWTAuthOptions;
+import io.vertx.ext.jwt.JWTOptions;
 import io.vertx.ext.auth.oauth2.OAuth2Auth;
 import io.vertx.ext.auth.oauth2.OAuth2ClientOptions;
 import io.vertx.ext.auth.oauth2.OAuth2FlowType;
@@ -71,7 +73,7 @@ public class WebExamples {
       response.end("Hello World from Vert.x-Web!");
     });
 
-    server.requestHandler(router::accept).listen(8080);
+    server.requestHandler(router).listen(8080);
 
   }
 
@@ -179,6 +181,20 @@ public class WebExamples {
 
       String productType = routingContext.request().getParam("param0");
       String productID = routingContext.request().getParam("param1");
+
+      // Do something with them...
+    });
+
+  }
+
+  public void example6_2(Router router) {
+
+    // This regular expression matches paths that start with something like: "/foo/bar"
+    // It uses named regex groups to capture path params
+    Route route = router.routeWithRegex("\\/(?<productType>[^\\/]+)\\/(?<productId>[^\\/]+)").handler(routingContext -> {
+
+      String productType = routingContext.request().getParam("productType");
+      String productID = routingContext.request().getParam("productId");
 
       // Do something with them...
     });
@@ -409,7 +425,8 @@ public class WebExamples {
 
   public void example20(Router router) {
 
-    Route route1 = router.route("/some/path/").handler(routingContext -> {
+    Route route = router.route("/some/path/");
+    route.handler(routingContext -> {
 
       HttpServerResponse response = routingContext.response();
       // enable chunked responses because we will be adding data as
@@ -423,7 +440,7 @@ public class WebExamples {
       routingContext.vertx().setTimer(5000, tid -> routingContext.next());
     });
 
-    Route route2 = router.route("/some/path/").handler(routingContext -> {
+    route.handler(routingContext -> {
 
       HttpServerResponse response = routingContext.response();
       response.write("route2\n");
@@ -432,7 +449,7 @@ public class WebExamples {
       routingContext.vertx().setTimer(5000, tid -> routingContext.next());
     });
 
-    Route route3 = router.route("/some/path/").handler(routingContext -> {
+    route.handler(routingContext -> {
 
       HttpServerResponse response = routingContext.response();
       response.write("route3");
@@ -1032,10 +1049,11 @@ public class WebExamples {
 
     Router router = Router.router(vertx);
 
-    JsonObject authConfig = new JsonObject().put("keyStore", new JsonObject()
-      .put("type", "jceks")
-      .put("path", "keystore.jceks")
-      .put("password", "secret"));
+    JWTAuthOptions authConfig = new JWTAuthOptions()
+      .setKeyStore(new KeyStoreOptions()
+        .setType("jceks")
+        .setPath("keystore.jceks")
+        .setPassword("secret"));
 
     JWTAuth authProvider = JWTAuth.create(vertx, authConfig);
 
@@ -1053,10 +1071,11 @@ public class WebExamples {
 
     Router router = Router.router(vertx);
 
-    JsonObject authConfig = new JsonObject().put("keyStore", new JsonObject()
-      .put("type", "jceks")
-      .put("path", "keystore.jceks")
-      .put("password", "secret"));
+    JWTAuthOptions authConfig = new JWTAuthOptions()
+      .setKeyStore(new KeyStoreOptions()
+        .setType("jceks")
+        .setPath("keystore.jceks")
+        .setPassword("secret"));
 
     JWTAuth authProvider = JWTAuth.create(vertx, authConfig);
 
@@ -1069,10 +1088,11 @@ public class WebExamples {
 
   public void example52(Vertx vertx) {
 
-    JsonObject authConfig = new JsonObject().put("keyStore", new JsonObject()
-      .put("type", "jceks")
-      .put("path", "keystore.jceks")
-      .put("password", "secret"));
+    JWTAuthOptions authConfig = new JWTAuthOptions()
+      .setKeyStore(new KeyStoreOptions()
+        .setType("jceks")
+        .setPath("keystore.jceks")
+        .setPassword("secret"));
 
     JWTAuth authProvider = JWTAuth.create(vertx, authConfig);
 
@@ -1170,7 +1190,7 @@ public class WebExamples {
         }
       }
       // we do not know the user language so lets just inform that back:
-      rc.response().end("Sorry we don't speak: " + rc.preferredLocale());
+      rc.response().end("Sorry we don't speak: " + rc.preferredLanguage());
     });
   }
 
@@ -1261,28 +1281,26 @@ public class WebExamples {
     );
     // Entry point to the application, this will render
     // a custom template.
-    router.get("/").handler(ctx -> {
-      ctx.response()
-        .putHeader("Content-Type", "text/html")
-        .end(
-          "<html>\n" +
-          "  <body>\n" +
-          "    <p>\n" +
-          "      Well, hello there!\n" +
-          "    </p>\n" +
-          "    <p>\n" +
-          "      We're going to the protected resource, if there is no\n" +
-          "      user in the session we will talk to the GitHub API. Ready?\n" +
-          "      <a href=\"/protected\">Click here</a> to begin!</a>\n" +
-          "    </p>\n" +
-          "    <p>\n" +
-          "      <b>If that link doesn't work</b>, remember to provide\n" +
-          "      your own <a href=\"https://github.com/settings/applications/new\">\n" +
-          "      Client ID</a>!\n" +
-          "    </p>\n" +
-          "  </body>\n" +
-          "</html>");
-    });
+    router.get("/").handler(ctx -> ctx.response()
+      .putHeader("Content-Type", "text/html")
+      .end(
+        "<html>\n" +
+        "  <body>\n" +
+        "    <p>\n" +
+        "      Well, hello there!\n" +
+        "    </p>\n" +
+        "    <p>\n" +
+        "      We're going to the protected resource, if there is no\n" +
+        "      user in the session we will talk to the GitHub API. Ready?\n" +
+        "      <a href=\"/protected\">Click here</a> to begin!</a>\n" +
+        "    </p>\n" +
+        "    <p>\n" +
+        "      <b>If that link doesn't work</b>, remember to provide\n" +
+        "      your own <a href=\"https://github.com/settings/applications/new\">\n" +
+        "      Client ID</a>!\n" +
+        "    </p>\n" +
+        "  </body>\n" +
+        "</html>"));
     // The protected resource
     router.get("/protected").handler(ctx -> {
       // at this moment your user object should contain the info

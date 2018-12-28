@@ -40,10 +40,11 @@ import io.vertx.core.http.ServerWebSocket;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 import io.vertx.core.net.SocketAddress;
+import io.vertx.core.streams.ReadStream;
+import io.vertx.ext.auth.User;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.Session;
 import io.vertx.ext.web.handler.sockjs.SockJSSocket;
-import io.vertx.ext.auth.User;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -82,6 +83,12 @@ class RawWebSocketTransport {
       return this;
     }
 
+    @Override
+    public ReadStream<Buffer> fetch(long amount) {
+      ws.fetch(amount);
+      return this;
+    }
+
     public SockJSSocket write(Buffer data) {
       ws.writeBinaryMessage(data);
       return this;
@@ -114,6 +121,15 @@ class RawWebSocketTransport {
     public void close() {
       super.close();
       ws.close();
+    }
+
+    public void closeAfterSessionExpired() {
+      this.close((short) 1001, "Session expired");
+    }
+
+    public void close(int statusCode, String reason) {
+      super.close();
+      ws.close((short) statusCode, reason);
     }
 
     @Override

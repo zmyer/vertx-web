@@ -1,12 +1,11 @@
 package io.vertx.ext.web.api.impl;
 
+import io.vertx.core.json.JsonObject;
 import io.vertx.ext.web.api.RequestParameter;
 import io.vertx.ext.web.api.RequestParameters;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collector;
 
 /**
  * @author Francesco Guardiani @slinkydeveloper
@@ -30,27 +29,53 @@ public class RequestParametersImpl implements RequestParameters {
   }
 
   public void setPathParameters(Map<String, RequestParameter> pathParameters) {
-    this.pathParameters = pathParameters;
+    if (pathParameters != null) {
+      this.pathParameters = pathParameters;
+    }
   }
 
   public void setQueryParameters(Map<String, RequestParameter> queryParameters) {
-    this.queryParameters = queryParameters;
+    if (queryParameters != null) {
+      this.queryParameters = queryParameters;
+    }
   }
 
   public void setHeaderParameters(Map<String, RequestParameter> headerParameters) {
-    this.headerParameters = headerParameters;
+    if (headerParameters != null) {
+      this.headerParameters = headerParameters;
+    }
   }
 
   public void setCookieParameters(Map<String, RequestParameter> cookieParameters) {
-    this.cookieParameters = cookieParameters;
+    if (cookieParameters != null) {
+      this.cookieParameters = cookieParameters;
+    }
   }
 
   public void setFormParameters(Map<String, RequestParameter> formParameters) {
-    this.formParameters = formParameters;
+    if (formParameters != null) {
+      this.formParameters = formParameters;
+    }
   }
 
   public void setBody(RequestParameter body) {
-    this.body = body;
+    if (body != null) {
+      this.body = body;
+    }
+  }
+
+  public void merge(RequestParametersImpl other) {
+    if (other.pathParameters != null)
+      this.pathParameters.putAll(other.pathParameters);
+    if (other.queryParameters != null)
+      this.queryParameters.putAll(other.queryParameters);
+    if (other.headerParameters != null)
+      this.headerParameters.putAll(other.headerParameters);
+    if (other.cookieParameters != null)
+      this.cookieParameters.putAll(other.cookieParameters);
+    if (other.formParameters != null)
+      this.formParameters.putAll(other.formParameters);
+    this.body = (other.body == null) ? this.body : other.body;
   }
 
   @Override
@@ -106,5 +131,47 @@ public class RequestParametersImpl implements RequestParameters {
   @Override
   public RequestParameter body() {
     return body;
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) return true;
+    if (o == null || getClass() != o.getClass()) return false;
+    RequestParametersImpl that = (RequestParametersImpl) o;
+    return Objects.equals(pathParameters, that.pathParameters) &&
+      Objects.equals(queryParameters, that.queryParameters) &&
+      Objects.equals(headerParameters, that.headerParameters) &&
+      Objects.equals(cookieParameters, that.cookieParameters) &&
+      Objects.equals(formParameters, that.formParameters) &&
+      Objects.equals(body, that.body);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(pathParameters, queryParameters, headerParameters, cookieParameters, formParameters, body);
+  }
+
+  @Override
+  public JsonObject toJson() {
+    JsonObject root = new JsonObject();
+    root.put("path", mapToJsonObject(pathParameters));
+    root.put("query", mapToJsonObject(queryParameters));
+    root.put("header", mapToJsonObject(headerParameters));
+    root.put("cookie", mapToJsonObject(cookieParameters));
+    root.put("form", mapToJsonObject(formParameters));
+    if (body != null)
+      root.put("body", body.toJson());
+    return root;
+  }
+
+  private JsonObject mapToJsonObject(Map<String, RequestParameter> params) {
+    return params
+      .entrySet()
+      .stream()
+      .collect(Collector.of(
+        JsonObject::new,
+        (j, e) -> j.put(e.getKey(), e.getValue().toJson()),
+        JsonObject::mergeIn
+      ));
   }
 }

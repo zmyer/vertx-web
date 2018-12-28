@@ -16,14 +16,6 @@
 
 package io.vertx.ext.web.handler.sockjs;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.BiConsumer;
-
 import io.vertx.core.MultiMap;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.CaseInsensitiveHeaders;
@@ -31,11 +23,22 @@ import io.vertx.core.http.WebSocket;
 import io.vertx.core.http.WebSocketFrame;
 import io.vertx.core.http.impl.FrameType;
 import io.vertx.core.http.impl.ws.WebSocketFrameImpl;
+import io.vertx.core.json.JsonObject;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
+import io.vertx.ext.bridge.PermittedOptions;
 import io.vertx.ext.web.WebTestBase;
+import io.vertx.ext.web.handler.BodyHandler;
 import io.vertx.test.core.TestUtils;
 import org.junit.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 
 /**
  * SockJS protocol tests
@@ -50,7 +53,9 @@ public class SockJSHandlerTest extends WebTestBase {
   @Override
   public void setUp() throws Exception {
     super.setUp();
-    SockJSHandler.installTestApplications(router, vertx);
+    // Make sure a catch-all BodyHandler will not prevent websocket connection
+    router.route().handler(BodyHandler.create());
+    SockJSProtocolTest.installTestApplications(router, vertx);
   }
 
   @Test
@@ -62,19 +67,19 @@ public class SockJSHandlerTest extends WebTestBase {
   }
 
   private void testGreeting(String uri) {
-    client.getNow(uri, resp -> {
+    client.getNow(uri, onSuccess(resp -> {
       assertEquals(200, resp.statusCode());
       assertEquals("text/plain; charset=UTF-8", resp.getHeader("content-type"));
       resp.bodyHandler(buff -> {
         assertEquals("Welcome to SockJS!\n", buff.toString());
         complete();
       });
-    });
+    }));
   }
 
   @Test
   public void testNotFound() {
-    waitFor(5);
+    waitFor(7);
 
     testNotFound("/echo/a");
     testNotFound("/echo/a.html");
@@ -348,10 +353,10 @@ public class SockJSHandlerTest extends WebTestBase {
   }
 
   private void testNotFound(String uri) {
-    client.getNow(uri, resp -> {
+    client.getNow(uri, onSuccess(resp -> {
       assertEquals(404, resp.statusCode());
       complete();
-    });
+    }));
   }
 
   @Test
@@ -376,4 +381,46 @@ public class SockJSHandlerTest extends WebTestBase {
     await();
   }
 
+  @Test
+  public void testTimeoutCloseCode() {
+    router.route("/ws-timeout/*").handler(SockJSHandler
+      .create(vertx)
+      .bridge(new BridgeOptions().setPingTimeout(1))
+    );
+
+    client.websocket("/ws-timeout/websocket", ws -> ws.frameHandler(frame -> {
+      if (frame.isClose()) {
+        assertEquals(1001, frame.closeStatusCode());
+        assertEquals("Session expired", frame.closeReason());
+        testComplete();
+      }
+    }));
+    await();
+  }
+
+  @Test
+  public void testInvalidMessageCode() {
+    router.route("/ws-timeout/*").handler(SockJSHandler
+      .create(vertx)
+      .bridge(new BridgeOptions().addInboundPermitted(new PermittedOptions().setAddress("SockJSHandlerTest.testInvalidMessageCode")))
+    );
+
+    vertx.eventBus().consumer("SockJSHandlerTest.testInvalidMessageCode", msg -> msg.reply(new JsonObject()));
+
+    client.websocket("/ws-timeout/websocket", ws -> {
+      ws.writeFinalBinaryFrame(Buffer.buffer("durp!"));
+
+      ws.frameHandler(frame -> {
+        // we should get a normal frame with a error message
+        if (!frame.isClose()) {
+          JsonObject msg = new JsonObject(frame.binaryData());
+          assertEquals("err", msg.getString("type"));
+          assertEquals("invalid_json", msg.getString("body"));
+          testComplete();
+          ws.close();
+        }
+      });
+    });
+    await();
+  }
 }

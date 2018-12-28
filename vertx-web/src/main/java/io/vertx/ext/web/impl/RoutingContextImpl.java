@@ -25,13 +25,23 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
+import io.vertx.core.http.impl.HttpUtils;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.User;
-import io.vertx.ext.web.*;
+import io.vertx.ext.web.Cookie;
+import io.vertx.ext.web.FileUpload;
 import io.vertx.ext.web.Locale;
+import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.Session;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -64,7 +74,11 @@ public class RoutingContextImpl extends RoutingContextImplBase {
     this.router = router;
 
     fillParsedHeaders(request);
-    if (request.path().charAt(0) != '/') {
+    if (request.path().length() == 0) {
+      // HTTP paths must start with a '/'
+      fail(400);
+    } else if (request.path().charAt(0) != '/') {
+      // For compatiblity we return `Not Found` when a path does not start with `/`
       fail(404);
     }
   }
@@ -186,7 +200,12 @@ public class RoutingContextImpl extends RoutingContextImplBase {
   @Override
   public String normalisedPath() {
     if (normalisedPath == null) {
-      normalisedPath = Utils.normalizePath(request.path());
+      String path = request.path();
+      if (path == null) {
+        normalisedPath = "/";
+      } else {
+        normalisedPath = HttpUtils.normalizePath(path);
+      }
     }
     return normalisedPath;
   }
@@ -203,10 +222,10 @@ public class RoutingContextImpl extends RoutingContextImplBase {
   }
 
   @Override
-  public Cookie removeCookie(String name) {
+  public Cookie removeCookie(String name, boolean invalidate) {
     Cookie cookie = cookiesMap().get(name);
     if (cookie != null) {
-      if (cookie.isFromUserAgent()) {
+      if (invalidate && cookie.isFromUserAgent()) {
         // in the case the cookie was passed from the User Agent
         // we need to expire it and sent it back to it can be
         // invalidated
@@ -241,12 +260,12 @@ public class RoutingContextImpl extends RoutingContextImplBase {
 
   @Override
   public JsonObject getBodyAsJson() {
-    return body != null ? new JsonObject(body.toString()) : null;
+    return body != null ? new JsonObject(body) : null;
   }
 
   @Override
   public JsonArray getBodyAsJsonArray() {
-    return body != null ? new JsonArray(body.toString()) : null;
+    return body != null ? new JsonArray(body) : null;
   }
 
   @Override

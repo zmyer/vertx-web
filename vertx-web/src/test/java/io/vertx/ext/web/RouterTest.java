@@ -16,16 +16,23 @@
 
 package io.vertx.ext.web;
 
+import io.vertx.core.Future;
 import io.vertx.core.Handler;
 import io.vertx.core.MultiMap;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import org.junit.Test;
 
+import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
+
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -71,14 +78,14 @@ public class RouterTest extends WebTestBase {
 
   @Test
   public void testRoutePathAndMethod() throws Exception {
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       testRoutePathAndMethod(meth, true);
     }
   }
 
   @Test
   public void testRoutePathAndMethodBegin() throws Exception {
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       testRoutePathAndMethod(meth, false);
     }
   }
@@ -92,7 +99,7 @@ public class RouterTest extends WebTestBase {
     } else {
       testPathBegin(method, path);
     }
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       if (meth != method) {
         testRequest(meth, path, 404, "Not Found");
       }
@@ -177,13 +184,13 @@ public class RouterTest extends WebTestBase {
   }
 
   private void testPathBegin(String path) throws Exception {
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       testPathBegin(meth, path);
     }
   }
 
   private void testPathExact(String path) throws Exception {
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       testPathExact(meth, path);
     }
   }
@@ -216,7 +223,7 @@ public class RouterTest extends WebTestBase {
   @Test
   public void testRouteNoPath() throws Exception {
     router.route().handler(rc -> rc.response().setStatusCode(200).setStatusMessage(rc.request().path()).end());
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       testNoPath(meth);
     }
   }
@@ -228,14 +235,14 @@ public class RouterTest extends WebTestBase {
       rc.next();
     });
     router.route().handler(rc -> rc.response().setStatusCode(200).end());
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       testNoPath(meth);
     }
   }
 
   @Test
   public void testRouteNoPathWithMethod() throws Exception {
-    for (HttpMethod meth: METHODS) {
+    for (HttpMethod meth : METHODS) {
       testRouteNoPathWithMethod(meth);
     }
   }
@@ -244,7 +251,7 @@ public class RouterTest extends WebTestBase {
     router.clear();
     router.route().method(meth).handler(rc -> rc.response().setStatusCode(200).setStatusMessage(rc.request().path()).end());
     testNoPath(meth);
-    for (HttpMethod m: METHODS) {
+    for (HttpMethod m : METHODS) {
       if (m != meth) {
         testRequest(m, "/whatever", 404, "Not Found");
       }
@@ -739,9 +746,9 @@ public class RouterTest extends WebTestBase {
       rc.response().setStatusMessage(params.get(paramName) + "|" + qValue).end();
     });
     testRequest(HttpMethod.GET,
-            "/blah/" + pathParamValue + "/test?" + paramName + "=" + queryParamValue1 + "&" + paramName + "=" + queryParamValue2,
-            200,
-            pathParamValue + "|" + queryParamValue1 + sep + queryParamValue2);
+      "/blah/" + pathParamValue + "/test?" + paramName + "=" + queryParamValue1 + "&" + paramName + "=" + queryParamValue2,
+      200,
+      pathParamValue + "|" + queryParamValue1 + sep + queryParamValue2);
   }
 
   @Test
@@ -856,7 +863,24 @@ public class RouterTest extends WebTestBase {
     router.routeWithRegex(".*foo.txt").handler(rc -> rc.response().setStatusMessage("ok").end());
     testPattern("/dog/cat/foo.txt", "ok");
     testRequest(HttpMethod.POST, "/dog/cat/foo.bar", 404, "Not Found");
+  }
 
+  @Test
+  public void testRegexWithNamedParams() throws Exception {
+    router.routeWithRegex(HttpMethod.GET, "\\/(?<name>[^\\/]+)\\/(?<surname>[^\\/]+)").handler(rc -> {
+      MultiMap params = rc.request().params();
+      rc.response().setStatusMessage(params.get("name") + params.get("surname")).end();
+    });
+    testPattern("/joe/doe", "joedoe");
+  }
+
+  @Test
+  public void testRegexWithNamedParamsKeepsIndexedParams() throws Exception {
+    router.routeWithRegex(HttpMethod.GET, "\\/(?<name>[^\\/]+)\\/(?<surname>[^\\/]+)").handler(rc -> {
+      MultiMap params = rc.request().params();
+      rc.response().setStatusMessage(params.get("param0") + params.get("param1")).end();
+    });
+    testPattern("/joe/doe", "joedoe");
   }
 
   @Test
@@ -1239,9 +1263,12 @@ public class RouterTest extends WebTestBase {
 
   @Test
   public void testGetRoutes() throws Exception {
-    router.route("/abc").handler(rc -> {});
-    router.route("/abc/def").handler(rc -> {});
-    router.route("/xyz").handler(rc -> {});
+    router.route("/abc").handler(rc -> {
+    });
+    router.route("/abc/def").handler(rc -> {
+    });
+    router.route("/xyz").handler(rc -> {
+    });
     List<Route> routes = router.getRoutes();
     assertEquals(3, routes.size());
   }
@@ -1804,6 +1831,13 @@ public class RouterTest extends WebTestBase {
   }
 
   @Test
+  public void testBadURL() throws Exception {
+    router.route().handler(rc -> rc.response().end());
+
+    testRequest(HttpMethod.GET, "/%7B%channel%%7D", 200, "OK");
+  }
+
+  @Test
   public void testDuplicateParams() throws Exception {
     router.route("/test/:p").handler(RoutingContext::next);
     router.route("/test/:p").handler(RoutingContext::next);
@@ -1857,9 +1891,9 @@ public class RouterTest extends WebTestBase {
   @Test
   public void testGetWithPlusPath2() throws Exception {
     router.get("/:param1").useNormalisedPath(false).handler(rc -> {
-      assertEquals("/some+path",rc.normalisedPath());
-      assertEquals("some+path",rc.pathParam("param1"));
-      assertEquals("some query",rc.request().getParam("q1"));
+      assertEquals("/some+path", rc.normalisedPath());
+      assertEquals("some+path", rc.pathParam("param1"));
+      assertEquals("some query", rc.request().getParam("q1"));
       rc.response().setStatusMessage("foo").end();
     });
     testRequest(HttpMethod.GET, "/some+path?q1=some+query", 200, "foo");
@@ -1952,6 +1986,148 @@ public class RouterTest extends WebTestBase {
   }
 
   @Test
+  public void testMultipleHandlersMultipleConnections() throws Exception {
+    router.get("/path").handler(routingContext -> {
+      routingContext.put("response", "handler1");
+      routingContext.next();
+    }).handler(routingContext -> {
+      routingContext.put("response", routingContext.get("response") + "handler2");
+      routingContext.next();
+    }).handler(routingContext -> {
+      HttpServerResponse response = routingContext.response();
+      response.setChunked(true);
+      response.end(routingContext.get("response") + "handler3");
+    });
+    CountDownLatch latch = new CountDownLatch(100);
+
+    for (int i = 0; i < 100; i++) {
+      vertx.executeBlocking(future -> {
+        try {
+          testSyncRequest("GET", "/path", 200, "OK", "handler1handler2handler3");
+          future.complete();
+        } catch (Exception e) {
+          e.printStackTrace();
+          future.fail(e);
+        }
+      }, asyncResult -> {
+        assertFalse(asyncResult.failed());
+        assertNull(asyncResult.cause());
+        latch.countDown();
+      });
+    }
+    awaitLatch(latch);
+  }
+
+  /*
+  This test is for issue #729 and #740 about thread safety and errors of multiple handlers
+  In this test case I try 100 connections in separated worker threads with random delays and old fashion Java sync http client.
+  I've also added a timer when I call routingContext.next()
+   */
+  @Test
+  public void testMultipleHandlersMultipleConnectionsDelayed() throws Exception {
+    router.get("/path").handler(routingContext -> {
+      routingContext.put("response", "handler1");
+      routingContext.vertx().setTimer((int) (1 + Math.random() * 10), asyncResult -> routingContext.next());
+    }).handler(routingContext -> {
+      routingContext.put("response", routingContext.get("response") + "handler2");
+      routingContext.vertx().setTimer((int) (1 + Math.random() * 10), asyncResult -> routingContext.next());
+    }).handler(routingContext -> {
+      HttpServerResponse response = routingContext.response();
+      response.setChunked(true);
+      response.end(routingContext.get("response") + "handler3");
+    });
+
+    CountDownLatch latch = new CountDownLatch(100);
+    for (int i = 0; i < 100; i++) {
+      // using executeBlocking should create multiple connections
+      vertx.executeBlocking(future -> {
+        try {
+          Thread.sleep((int) (1 + Math.random() * 10));
+          testSyncRequest("GET", "/path", 200, "OK", "handler1handler2handler3");
+          future.complete();
+        } catch (Exception e) {
+          future.fail(e);
+        }
+      }, asyncResult -> {
+        assertFalse(asyncResult.failed());
+        assertNull(asyncResult.cause());
+        latch.countDown();
+      });
+    }
+    awaitLatch(latch);
+  }
+
+  /*
+    This test is similar to test above but it mixes right and failing requests
+   */
+  @Test
+  public void testMultipleHandlersMultipleConnectionsDelayedMixed() throws Exception {
+    router.get("/:param").handler(routingContext -> {
+      if (routingContext.pathParam("param").equals("fail")) {
+        routingContext.fail(400);
+      } else {
+        routingContext.put("response", "handler1");
+        routingContext.vertx().setTimer((int) (1 + Math.random() * 10), asyncResult -> routingContext.next());
+      }
+    }).failureHandler(routingContext -> {
+      routingContext.put("response", "fhandler1");
+      routingContext.vertx().setTimer((int) (1 + Math.random() * 10), asyncResult -> routingContext.next());
+    }).handler(routingContext -> {
+      routingContext.put("response", routingContext.get("response") + "handler2");
+      routingContext.vertx().setTimer((int) (1 + Math.random() * 10), asyncResult -> routingContext.next());
+    }).handler(routingContext -> {
+      HttpServerResponse response = routingContext.response();
+      response.setChunked(true);
+      response.end(routingContext.get("response") + "handler3");
+    }).failureHandler(routingContext -> {
+      routingContext.put("response", routingContext.get("response") + "fhandler2");
+      routingContext.vertx().setTimer((int) (1 + Math.random() * 10), asyncResult -> routingContext.next());
+    }).failureHandler(routingContext -> {
+      HttpServerResponse response = routingContext.response();
+      response.setChunked(true);
+      response.setStatusMessage("ERROR");
+      response.setStatusCode(400);
+      response.end(routingContext.get("response") + "fhandler3");
+    });
+
+    final int multipleConnections = 500;
+
+    CountDownLatch latch = new CountDownLatch(multipleConnections);
+
+    Handler<Future<Object>> execute200Request = future -> {
+      try {
+        Thread.sleep((int) (1 + Math.random() * 10));
+        testSyncRequest("GET", "/path", 200, "OK", "handler1handler2handler3");
+        future.complete();
+      } catch (InterruptedException | IOException e) {
+        e.printStackTrace();
+        future.fail(e);
+      }
+    };
+
+    Handler<Future<Object>> execute400Request = future -> {
+      try {
+        Thread.sleep((int) (1 + Math.random() * 10));
+        testSyncRequest("GET", "/fail", 400, "ERROR", "fhandler1fhandler2fhandler3");
+        future.complete();
+      } catch (InterruptedException | IOException e) {
+        e.printStackTrace();
+        future.fail(e);
+      }
+    };
+
+    for (int i = 0; i < multipleConnections; i++) {
+      // using executeBlocking should create multiple connections
+      vertx.executeBlocking((new Random().nextBoolean() ? execute200Request : execute400Request), objectAsyncResult -> {
+        assertTrue(objectAsyncResult.succeeded());
+        latch.countDown();
+      });
+    }
+    awaitLatch(latch);
+  }
+
+
+  @Test
   public void testMultipleSetHandlerMultipleRouteObject() throws Exception {
     router.get("/path").handler(routingContext -> {
       routingContext.put("response", "handler1");
@@ -1966,5 +2142,217 @@ public class RouterTest extends WebTestBase {
       response.end(routingContext.get("response") + "handler3");
     });
     testRequest(HttpMethod.GET, "/path", 200, "OK", "handler1handler2handler3");
+  }
+
+  @Test
+  public void testSetRegexGroupsNamesMethod() throws Exception {
+    List<String> groupNames = new ArrayList<>();
+    groupNames.add("hello");
+
+    Route route1 = router.getWithRegex("\\/(?<p0>[a-z]{2})");
+    route1.setRegexGroupsNames(groupNames);
+    route1.handler(routingContext -> routingContext
+      .response()
+      .setStatusCode(200)
+      .setStatusMessage(routingContext.pathParam("hello"))
+      .end());
+    testRequest(HttpMethod.GET, "/hi", 200, "hi");
+
+  }
+
+  @Test
+  public void testRegexGroupsNamesWithMethodOverride() throws Exception {
+    List<String> groupNames = new ArrayList<>();
+    groupNames.add("FirstParam");
+    groupNames.add("SecondParam");
+
+    Route route = router.getWithRegex("\\/([a-z]{2})([a-z]{2})");
+    route.setRegexGroupsNames(groupNames);
+    route.handler(routingContext -> routingContext
+      .response()
+      .setStatusCode(200)
+      .setStatusMessage(routingContext.pathParam("FirstParam") + "-" + routingContext.pathParam("SecondParam"))
+      .end());
+    testRequest(HttpMethod.GET, "/aabb", 200, "aa-bb");
+  }
+
+  @Test
+  public void testSetRegexGroupsNamesMethodWithUnorderedGroups() throws Exception {
+    List<String> groupNames = new ArrayList<>();
+    groupNames.add("firstParam");
+    groupNames.add("secondParam");
+
+    Route route1 = router.getWithRegex("\\/(?<p1>[a-z]{2})(?<p0>[a-z]{2})");
+    route1.setRegexGroupsNames(groupNames);
+    route1.handler(routingContext -> routingContext
+      .response()
+      .setStatusCode(200)
+      .setStatusMessage(routingContext.pathParam("firstParam") + "-" + routingContext.pathParam("secondParam"))
+      .end());
+    testRequest(HttpMethod.GET, "/bbaa", 200, "aa-bb");
+
+  }
+
+  @Test
+  public void testSetRegexGroupsNamesMethodWithNestedRegex() throws Exception {
+    List<String> groupNames = new ArrayList<>();
+    groupNames.add("firstParam");
+    groupNames.add("secondParam");
+
+    Route route1 = router.getWithRegex("\\/(?<p1>[a-z]{2}(?<p0>[a-z]{2}))");
+    route1.setRegexGroupsNames(groupNames);
+    route1.handler(routingContext -> routingContext
+      .response()
+      .setStatusCode(200)
+      .setStatusMessage(routingContext.pathParam("firstParam") + "-" + routingContext.pathParam("secondParam"))
+      .end());
+    testRequest(HttpMethod.GET, "/bbaa", 200, "aa-bbaa");
+
+  }
+
+  @Test
+  public void testRegexGroupsNames() throws Exception {
+    router.getWithRegex("\\/(?<firstParam>[a-z]{2})(?<secondParam>[a-z]{2})").handler(routingContext -> routingContext
+      .response()
+      .setStatusCode(200)
+      .setStatusMessage(routingContext.pathParam("firstParam") + "-" + routingContext.pathParam("secondParam"))
+      .end());
+    testRequest(HttpMethod.GET, "/aabb", 200, "aa-bb");
+  }
+
+  @Test
+  public void testRegexGroupsNamesWithNestedGroups() throws Exception {
+    router.getWithRegex("\\/(?<secondParam>[a-z]{2}(?<firstParam>[a-z]{2}))").handler(routingContext -> routingContext
+      .response()
+      .setStatusCode(200)
+      .setStatusMessage(routingContext.pathParam("firstParam") + "-" + routingContext.pathParam("secondParam"))
+      .end());
+    testRequest(HttpMethod.GET, "/bbaa", 200, "aa-bbaa");
+  }
+
+  private Handler<RoutingContext> generateHandler(final int i) {
+    return routingContext -> routingContext.put(Integer.toString(i), i).next();
+  }
+
+  @Test
+  public void stressTestMultipleHandlers() throws Exception {
+    final int HANDLERS_NUMBER = 100;
+    final int REQUESTS_NUMBER = 200;
+
+    Route r = router.get("/path");
+    for (int i = 0; i < HANDLERS_NUMBER; i++) {
+      r.handler(generateHandler(i));
+    }
+    r.handler(routingContext -> {
+      StringBuilder sum = new StringBuilder();
+      for (int i = 0; i < HANDLERS_NUMBER; i++) {
+        sum.append((Integer) routingContext.get(Integer.toString(i)));
+      }
+      routingContext.response()
+        .setStatusCode(200)
+        .setStatusMessage("OK")
+        .end(sum.toString());
+    });
+
+    CountDownLatch latch = new CountDownLatch(REQUESTS_NUMBER);
+    final StringBuilder sum = new StringBuilder();
+    for (int i = 0; i < HANDLERS_NUMBER; i++) {
+      sum.append(i);
+    }
+    for (int i = 0; i < REQUESTS_NUMBER; i++) {
+      // using executeBlocking should create multiple connections
+      vertx.executeBlocking(future -> {
+        try {
+          Thread.sleep((int) (1 + Math.random() * 10));
+          testSyncRequest("GET", "/path", 200, "OK", sum.toString());
+          future.complete();
+        } catch (Exception e) {
+          future.fail(e);
+        }
+      }, asyncResult -> {
+        assertFalse(asyncResult.failed());
+        assertNull(asyncResult.cause());
+        latch.countDown();
+      });
+    }
+    awaitLatch(latch);
+  }
+
+  @Test
+  public void testDecodingError() throws Exception {
+    String BAD_PARAM = "~!@\\||$%^&*()_=-%22;;%27%22:%3C%3E/?]}{";
+
+    router.route().handler(RoutingContext::next);
+    router.route("/path").handler(rc -> rc.response().setStatusCode(500).end());
+    testRequest(HttpMethod.GET, "/path?q=" + BAD_PARAM, 400, "Bad Request");
+  }
+
+  @Test
+  public void testRoutePathNoSlashBegin() throws Exception {
+    String path = "?test=something";
+    router.route().handler(rc -> rc.response().end());
+    testRequest(HttpMethod.GET, path, 400, "Bad Request");
+  }
+
+  @Test
+  public void testMultipleHandlersWithFailuresDeadlock() throws Exception {
+    AtomicBoolean first = new AtomicBoolean(true);
+    CountDownLatch firstHandlerLatch = new CountDownLatch(1);
+    CountDownLatch secondHandlerLatch = new CountDownLatch(1);
+
+    router.get("/path").handler(event -> {
+      if (!first.compareAndSet(true, false)) {
+        // Second run, block until the second handler runs
+        try {
+          firstHandlerLatch.countDown();
+          awaitLatch(secondHandlerLatch);
+
+          // Add a small delay so the exception handler happens first
+          Thread.sleep(100);
+        } catch (InterruptedException e) {
+          // ignore
+        }
+
+        event.next();
+      } else {
+        vertx.executeBlocking(future -> {
+          event.next();
+          future.complete();
+        }, asyncResult -> {});
+      }
+    });
+
+    router.get("/path").handler(event -> {
+      try {
+        awaitLatch(firstHandlerLatch);
+      } catch (InterruptedException e) {
+        // ignore
+      }
+      secondHandlerLatch.countDown();
+      event.fail(new NullPointerException());
+    });
+
+    CountDownLatch latch = new CountDownLatch(2);
+    for (int i = 0; i < 2; i++) {
+      vertx.executeBlocking(future -> {
+        HttpServerRequest request = mock(HttpServerRequest.class);
+        HttpServerResponse response = mock(HttpServerResponse.class);
+        when(request.method()).thenReturn(HttpMethod.GET);
+        when(request.rawMethod()).thenReturn("GET");
+        when(request.uri()).thenReturn("http://localhost/path");
+        when(request.absoluteURI()).thenReturn("http://localhost/path");
+        when(request.host()).thenReturn("localhost");
+        when(request.path()).thenReturn("/path");
+        when(request.response()).thenReturn(response);
+        when(response.ended()).thenReturn(true);
+        router.handle(request);
+        future.complete();
+      }, asyncResult -> {
+        assertFalse(asyncResult.failed());
+        assertNull(asyncResult.cause());
+        latch.countDown();
+      });
+    }
+    awaitLatch(latch);
   }
 }

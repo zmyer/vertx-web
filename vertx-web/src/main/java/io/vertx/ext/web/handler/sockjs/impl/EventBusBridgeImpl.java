@@ -317,10 +317,11 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
         PingInfo pingInfo = new PingInfo();
         pingInfo.timerID = vertx.setPeriodic(pingTimeout, id -> {
           if (System.currentTimeMillis() - pingInfo.lastPing >= pingTimeout) {
-        	// Trigger an event to allow custom behavior before disconnecting client.
-            checkCallHook(() -> new BridgeEventImpl(BridgeEventType.SOCKET_IDLE, null, sock), null, null);
-            // We didn't receive a ping in time so close the socket
-            sock.close();
+            // Trigger an event to allow custom behavior before disconnecting client.
+            checkCallHook(() -> new BridgeEventImpl(BridgeEventType.SOCKET_IDLE, null, sock),
+              // We didn't receive a ping in time so close the socket
+              ((SockJSSocketBase) sock)::closeAfterSessionExpired,
+              () -> replyError(sock, "rejected"));
           }
         });
         SockInfo sockInfo = new SockInfo();
@@ -455,11 +456,11 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
           ReplyException cause = (ReplyException) result.cause();
           JsonObject envelope =
             new JsonObject()
-                .put("type", "err")
-                .put("address", replyAddress)
-                .put("failureCode", cause.failureCode())
-                .put("failureType", cause.failureType().name())
-                .put("message", cause.getMessage());
+              .put("type", "err")
+              .put("address", replyAddress)
+              .put("failureCode", cause.failureCode())
+              .put("failureType", cause.failureType().name())
+              .put("message", cause.getMessage());
           sock.write(buffer(envelope.encode()));
         }
         info.handlerCount--;
@@ -495,7 +496,7 @@ public class EventBusBridgeImpl implements Handler<SockJSSocket> {
                          Handler<AsyncResult<Boolean>> handler) {
 
     if (curMatch.requiredAuthority != null) {
-      webUser.isAuthorised(curMatch.requiredAuthority, res -> {
+      webUser.isAuthorized(curMatch.requiredAuthority, res -> {
         if (res.succeeded()) {
           handler.handle(Future.succeededFuture(res.result()));
         } else {

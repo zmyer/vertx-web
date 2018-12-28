@@ -26,6 +26,11 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.core.http.HttpServerOptions;
 import io.vertx.test.core.VertxTestBase;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -51,7 +56,7 @@ public class WebTestBase extends VertxTestBase {
     server = vertx.createHttpServer(getHttpServerOptions());
     client = vertx.createHttpClient(getHttpClientOptions());
     CountDownLatch latch = new CountDownLatch(1);
-    server.requestHandler(router::accept).listen(onSuccess(res -> latch.countDown()));
+    server.requestHandler(router).listen(onSuccess(res -> latch.countDown()));
     awaitLatch(latch);
   }
 
@@ -142,7 +147,7 @@ public class WebTestBase extends VertxTestBase {
                                    int statusCode, String statusMessage,
                                    Buffer responseBodyBuffer, boolean normalizeLineEndings) throws Exception {
     CountDownLatch latch = new CountDownLatch(1);
-    HttpClientRequest req = client.request(method, port, "localhost", path, resp -> {
+    HttpClientRequest req = client.request(method, port, "localhost", path, onSuccess(resp -> {
       assertEquals(statusCode, resp.statusCode());
       assertEquals(statusMessage, resp.statusMessage());
       if (responseAction != null) {
@@ -159,7 +164,7 @@ public class WebTestBase extends VertxTestBase {
           latch.countDown();
         });
       }
-    });
+    }));
     if (requestAction != null) {
       requestAction.accept(req);
     }
@@ -177,5 +182,40 @@ public class WebTestBase extends VertxTestBase {
       }
     }
     return normalized;
+  }
+
+  protected void testSyncRequest(String httpMethod, String path, int statusCode, String statusMessage, String responseBody) throws IOException {
+    HttpURLConnection connection = (HttpURLConnection) new URL("http://localhost:" + this.server.actualPort() + path).openConnection();
+    connection.setRequestMethod(httpMethod);
+
+    assertEquals(statusCode, connection.getResponseCode());
+    if (connection.getResponseCode() < 400) { // So dummy compare
+      assertEquals(statusMessage, connection.getResponseMessage());
+
+      BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+      String inputLine;
+      StringBuilder response = new StringBuilder();
+
+      while ((inputLine = in.readLine()) != null) {
+        response.append(inputLine);
+      }
+      in.close();
+
+      assertEquals(responseBody, response.toString());
+    } else {
+      assertEquals(statusMessage, connection.getResponseMessage());
+
+      BufferedReader in = new BufferedReader(new InputStreamReader(connection.getErrorStream()));
+      String inputLine;
+      StringBuilder response = new StringBuilder();
+
+      while ((inputLine = in.readLine()) != null) {
+        response.append(inputLine);
+      }
+      in.close();
+
+      assertEquals(responseBody, response.toString());
+    }
+
   }
 }

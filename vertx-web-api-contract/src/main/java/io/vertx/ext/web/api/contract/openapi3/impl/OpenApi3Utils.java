@@ -1,20 +1,43 @@
 package io.vertx.ext.web.api.contract.openapi3.impl;
 
-import io.swagger.oas.models.media.ComposedSchema;
-import io.swagger.oas.models.media.Schema;
-import io.swagger.oas.models.parameters.Parameter;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.JsonNodeType;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.Operation;
+import io.swagger.v3.oas.models.PathItem;
+import io.swagger.v3.oas.models.media.ComposedSchema;
+import io.swagger.v3.oas.models.media.MediaType;
+import io.swagger.v3.oas.models.media.Schema;
+import io.swagger.v3.oas.models.parameters.Parameter;
+import io.swagger.v3.parser.ObjectMapperFactory;
+import io.swagger.v3.parser.core.models.ParseOptions;
+import io.vertx.core.Handler;
+import io.vertx.core.json.JsonObject;
+import io.vertx.ext.web.api.OperationRequest;
+import io.vertx.ext.web.api.contract.RouterFactoryException;
 import io.vertx.ext.web.api.validation.SpecFeatureNotSupportedException;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.lang.reflect.Method;
+import java.util.*;
+import java.util.function.Predicate;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * @author Francesco Guardiani @slinkydeveloper
  */
 public class OpenApi3Utils {
+
+  public static ParseOptions getParseOptions() {
+    ParseOptions options = new ParseOptions();
+    options.setResolve(true);
+    options.setResolveCombinators(false);
+    options.setResolveFully(true);
+    return options;
+  }
 
   public static boolean isParameterArrayType(Parameter parameter) {
     if (parameter.getSchema() != null && parameter.getSchema().getType() != null)
@@ -27,7 +50,11 @@ public class OpenApi3Utils {
   }
 
   public static boolean isSchemaObjectOrAllOfType(Schema schema) {
-    return schema != null && (isAllOfSchema(schema) || "object".equals(schema.getType()));
+    return isSchemaObject(schema) || isAllOfSchema(schema);
+  }
+
+  public static boolean isSchemaObject(Schema schema) {
+    return schema != null && ("object".equals(schema.getType()) || schema.getProperties() != null);
   }
 
   public static boolean isRequiredParam(Schema schema, String parameterName) {
@@ -55,19 +82,19 @@ public class OpenApi3Utils {
   }
 
   public static boolean isOneOfSchema(Schema schema) {
-    if(!(schema instanceof ComposedSchema)) return false;
+    if (!(schema instanceof ComposedSchema)) return false;
     ComposedSchema composedSchema = (ComposedSchema) schema;
     return (composedSchema.getOneOf() != null && composedSchema.getOneOf().size() != 0);
   }
 
   public static boolean isAnyOfSchema(Schema schema) {
-    if(!(schema instanceof ComposedSchema)) return false;
+    if (!(schema instanceof ComposedSchema)) return false;
     ComposedSchema composedSchema = (ComposedSchema) schema;
     return (composedSchema.getAnyOf() != null && composedSchema.getAnyOf().size() != 0);
   }
 
   public static boolean isAllOfSchema(Schema schema) {
-    if(!(schema instanceof ComposedSchema)) return false;
+    if (!(schema instanceof ComposedSchema)) return false;
     ComposedSchema composedSchema = (ComposedSchema) schema;
     return (composedSchema.getAllOf() != null && composedSchema.getAllOf().size() != 0);
   }
@@ -115,10 +142,10 @@ public class OpenApi3Utils {
     } else {
       List<Parameter> result = new ArrayList<>(operationParameters);
       List<Parameter> actualParams = new ArrayList<>(operationParameters);
-      for (int i = 0; i < parentParameters.size(); i++) {
-        for (int j = 0; j < actualParams.size(); j++) {
-          Parameter parentParam = parentParameters.get(i);
-          Parameter actualParam = actualParams.get(j);
+      for (Parameter parentParameter : parentParameters) {
+        for (Parameter actualParam1 : actualParams) {
+          Parameter parentParam = parentParameter;
+          Parameter actualParam = actualParam1;
           if (!(parentParam.getIn().equalsIgnoreCase(actualParam.getIn()) && parentParam.getName().equals(actualParam
             .getName())))
             result.add(parentParam);
@@ -152,7 +179,7 @@ public class OpenApi3Utils {
     for (Schema schema : allOfSchemas) {
       if (schema.getType() != null && !schema.getType().equals("object"))
         throw new SpecFeatureNotSupportedException("allOf only allows inner object types");
-      for (Map.Entry<String, ? extends Schema> entry : ((Map<String, Schema>)schema.getProperties()).entrySet()) {
+      for (Map.Entry<String, ? extends Schema> entry : ((Map<String, Schema>) schema.getProperties()).entrySet()) {
         properties.put(entry.getKey(), new OpenApi3Utils.ObjectField(entry.getValue(), entry.getKey(), schema));
       }
     }
@@ -169,12 +196,160 @@ public class OpenApi3Utils {
       } else {
         // type object case
         Map<String, ObjectField> properties = new HashMap<>();
-        for (Map.Entry<String, ? extends Schema> entry : ((Map<String, Schema>)schema.getProperties()).entrySet()) {
+        if (schema.getProperties() == null) return new HashMap<>();
+        for (Map.Entry<String, ? extends Schema> entry : ((Map<String, Schema>) schema.getProperties()).entrySet()) {
           properties.put(entry.getKey(), new OpenApi3Utils.ObjectField(entry.getValue(), entry.getKey(), schema));
         }
         return properties;
       }
     } else return null;
+  }
+
+  private final static Pattern COMPONENTS_REFS_MATCHER = Pattern.compile("^\\#\\/components\\/schemas\\/(.+)$");
+  private final static String COMPONENTS_REFS_SUBSTITUTION = "\\#\\/definitions\\/$1";
+
+  public static JsonNode generateSanitizedJsonSchemaNode(Schema s, OpenAPI oas) {
+    ObjectNode node = ObjectMapperFactory.createJson().convertValue(s, ObjectNode.class);
+    walkAndSolve(node, node, oas);
+    return node;
+  }
+
+  private static void walkAndSolve(ObjectNode n, ObjectNode root, OpenAPI oas) {
+    if (n.has("$ref")) {
+      replaceRef(n, root, oas);
+    } else if (n.has("allOf")) {
+      for (JsonNode jsonNode : n.get("allOf")) {
+        // We assert that parser validated allOf as array of objects
+        walkAndSolve((ObjectNode) jsonNode, root, oas);
+      }
+    } else if (n.has("anyOf")) {
+      for (JsonNode jsonNode : n.get("anyOf")) {
+        walkAndSolve((ObjectNode) jsonNode, root, oas);
+      }
+    } else if (n.has("oneOf")) {
+      for (JsonNode jsonNode : n.get("oneOf")) {
+        walkAndSolve((ObjectNode) jsonNode, root, oas);
+      }
+    } else if (n.has("properties")) {
+      ObjectNode properties = (ObjectNode) n.get("properties");
+      Iterator<String> it = properties.fieldNames();
+      while (it.hasNext()) {
+        walkAndSolve((ObjectNode) properties.get(it.next()), root, oas);
+      }
+    } else if (n.has("items")) {
+      walkAndSolve((ObjectNode) n.get("items"), root, oas);
+    } else if (n.has("additionalProperties")) {
+      JsonNode jsonNode = n.get("additionalProperties");
+      if (jsonNode.getNodeType().equals(JsonNodeType.OBJECT)) {
+        walkAndSolve((ObjectNode) n.get("additionalProperties"), root, oas);
+      }
+    }
+  }
+
+  private static void replaceRef(ObjectNode n, ObjectNode root, OpenAPI oas) {
+    /**
+     * If a ref is found, the structure of the schema is circular. The oas parser don't solve circular refs.
+     * So I bundle the schema:
+     * 1. I update the ref field with a #/definitions/schema_name uri
+     * 2. If #/definitions/schema_name is empty, I solve it
+     */
+    String oldRef = n.get("$ref").asText();
+    Matcher m = COMPONENTS_REFS_MATCHER.matcher(oldRef);
+    if (m.lookingAt()) {
+      String schemaName = m.group(1);
+      String newRef = m.replaceAll(COMPONENTS_REFS_SUBSTITUTION);
+      n.remove("$ref");
+      n.put("$ref", newRef);
+      if (!root.has("definitions") || !root.get("definitions").has(schemaName)) {
+        Schema s = oas.getComponents().getSchemas().get(schemaName);
+        ObjectNode schema = ObjectMapperFactory.createJson().convertValue(s, ObjectNode.class);
+        // We need to search inside for other refs
+        if (!root.has("definitions")) {
+          ObjectNode definitions = root.putObject("definitions");
+          definitions.set(schemaName, schema);
+        } else {
+          ((ObjectNode)root.get("definitions")).set(schemaName, schema);
+        }
+        walkAndSolve(schema, root, oas);
+      }
+    } else throw new RuntimeException("Wrong ref! " + oldRef);
+  }
+
+  public static List<MediaType> extractTypesFromMediaTypesMap(Map<String, MediaType> types, Predicate<String> matchingFunction) {
+    return types
+      .entrySet().stream()
+      .filter(e -> matchingFunction.test(e.getKey()))
+      .map(Map.Entry::getValue).collect(Collectors.toList());
+  }
+
+  public final static List<Class> SERVICE_PROXY_METHOD_PARAMETERS = Arrays.asList(new Class[]{OperationRequest.class, Handler.class});
+
+  public static boolean serviceProxyMethodIsCompatibleHandler(Method method) {
+    java.lang.reflect.Parameter[] parameters = method.getParameters();
+    if (parameters.length < 2) return false;
+    if (!parameters[parameters.length - 1].getType().equals(Handler.class)) return false;
+    if (!parameters[parameters.length - 2].getType().equals(OperationRequest.class)) return false;
+    return true;
+  }
+
+  public static JsonObject sanitizeDeliveryOptionsExtension(JsonObject jsonObject) {
+    JsonObject newObj = new JsonObject();
+    if (jsonObject.containsKey("timeout")) newObj.put("timeout", jsonObject.getValue("timeout"));
+    if (jsonObject.containsKey("headers")) newObj.put("headers", jsonObject.getValue("headers"));
+    return newObj;
+  }
+
+  public static String sanitizeOperationId(String operationId) {
+    StringBuffer result = new StringBuffer();
+    for (int i = 0; i < operationId.length(); i++) {
+      char c = operationId.charAt(i);
+      if (c == '-' || c == ' ' || c == '_') {
+        try {
+          while (c == '-' || c == ' ' || c == '_') {
+            i++;
+            c = operationId.charAt(i);
+          }
+          result.append(Character.toUpperCase(operationId.charAt(i)));
+        } catch (StringIndexOutOfBoundsException e) {}
+      } else {
+        result.append(c);
+      }
+    }
+    return result.toString();
+  }
+  
+  public static Object getAndMergeServiceExtension(String extensionKey, String addressKey, String methodKey, PathItem pathModel, Operation operationModel) {
+    Object pathExtension = pathModel.getExtensions() != null ? pathModel.getExtensions().get(extensionKey) : null;
+    Object operationExtension = operationModel.getExtensions() != null ? operationModel.getExtensions().get(extensionKey) : null;
+
+    // Cases:
+    // 1. both strings or path extension null: operation extension overrides all
+    // 2. path extension map and operation extension string: path extension interpreted as delivery options and operation extension as address
+    // 3. path extension string and operation extension map: path extension interpreted as address
+    // 4. both maps: extension map overrides path map elements
+    // 5. operation extension null: path extension overrides all
+
+    if ((operationExtension instanceof String && pathExtension instanceof String) || pathExtension == null) return operationExtension;
+    if (operationExtension instanceof String && pathExtension instanceof Map) {
+      Map<String, Object> result = new HashMap<>();
+      result.put(addressKey, operationExtension);
+      Map<String, Object> pathExtensionMap = (Map<String, Object>) pathExtension;
+      if (pathExtensionMap.containsKey(methodKey)) throw RouterFactoryException.createWrongExtension("Extension " + extensionKey + " in path declaration must not contain " + methodKey);
+      pathExtensionMap.forEach(result::putIfAbsent);
+      return result;
+    }
+    if (operationExtension instanceof Map && pathExtension instanceof String) {
+      Map<String, Object> result = (Map<String, Object>) operationExtension;
+      result.putIfAbsent(addressKey, pathExtension);
+      return result;
+    }
+    if (operationExtension instanceof Map && pathExtension instanceof Map) {
+      Map<String, Object> result = (Map<String, Object>) operationExtension;
+      ((Map<String, Object>)pathExtension).forEach(result::putIfAbsent);
+      return result;
+    }
+    if (operationExtension == null) return pathExtension;
+    return null;
   }
 
 }

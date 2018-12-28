@@ -2,15 +2,15 @@ package io.vertx.ext.web.api.validation.impl;
 
 import io.netty.handler.codec.http.QueryStringDecoder;
 import io.vertx.core.MultiMap;
+import io.vertx.core.http.CaseInsensitiveHeaders;
 import io.vertx.ext.web.FileUpload;
-import io.vertx.ext.web.api.RequestParameter;
 import io.vertx.ext.web.RoutingContext;
+import io.vertx.ext.web.api.RequestParameter;
 import io.vertx.ext.web.api.impl.RequestParameterImpl;
 import io.vertx.ext.web.api.impl.RequestParametersImpl;
 import io.vertx.ext.web.api.validation.*;
+import io.vertx.ext.web.impl.Utils;
 
-import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -21,7 +21,11 @@ public abstract class BaseValidationHandler implements ValidationHandler {
 
   private Map<String, ParameterValidationRule> pathParamsRules;
   private Map<String, ParameterValidationRule> cookieParamsRules;
+  private ParameterTypeValidator cookieAdditionalPropertiesValidator;
+  private String cookieAdditionalPropertiesObjectPropertyName;
   private Map<String, ParameterValidationRule> queryParamsRules;
+  private ParameterTypeValidator queryAdditionalPropertiesValidator;
+  private String queryAdditionalPropertiesObjectPropertyName;
   private Map<String, ParameterValidationRule> formParamsRules;
   private Map<String, ParameterValidationRule> headerParamsRules;
   private ParameterTypeValidator entireBodyValidator;
@@ -30,7 +34,7 @@ public abstract class BaseValidationHandler implements ValidationHandler {
 
   private List<CustomValidator> customValidators;
 
-  protected boolean expectedBodyNotEmpty;
+  protected boolean bodyRequired;
 
   protected BaseValidationHandler() {
     pathParamsRules = new HashMap<>();
@@ -42,7 +46,7 @@ public abstract class BaseValidationHandler implements ValidationHandler {
     bodyFileRules = new ArrayList<>();
     customValidators = new ArrayList<>();
 
-    expectedBodyNotEmpty = false;
+    bodyRequired = false;
   }
 
   @Override
@@ -62,26 +66,33 @@ public abstract class BaseValidationHandler implements ValidationHandler {
 
       String contentType = routingContext.request().getHeader("Content-Type");
       if (contentType != null && contentType.length() != 0) {
-        if (multipartFileRules.size() != 0 && !contentType.contains("multipart/form-data"))
+        boolean isMultipart = contentType.contains("multipart/form-data");
+
+        if (multipartFileRules.size() != 0 && !isMultipart) {
           throw ValidationException.ValidationExceptionFactory.generateWrongContentTypeExpected(contentType,
             "multipart/form-data");
-        if (contentType.contains("application/x-www-form-urlencoded") || contentType.contains("multipart/form-data")) {
-          parsedParameters.setFormParameters(validateFormParams(routingContext));
-          if (contentType.contains("multipart/form-data")) validateFileUpload(routingContext);
-        } else if (contentType.equals("application/json") || contentType.equals("application/xml"))
-          parsedParameters.setBody(validateEntireBody(routingContext));
-        else {
-          routingContext.fail(400);
-          return;
         }
-      } else {
-        if (expectedBodyNotEmpty && !checkContentType(contentType))
+        if (contentType.contains("application/x-www-form-urlencoded")) {
+          parsedParameters.setFormParameters(validateFormParams(routingContext));
+        } else if (isMultipart) {
+          parsedParameters.setFormParameters(validateFormParams(routingContext));
+          validateFileUpload(routingContext);
+        } else if (Utils.isJsonContentType(contentType) || Utils.isXMLContentType(contentType)) {
+          parsedParameters.setBody(validateEntireBody(routingContext));
+        } else if (bodyRequired && !checkContentType(contentType)) {
           throw ValidationException.ValidationExceptionFactory.generateWrongContentTypeExpected(contentType, null);
+        } // If content type is valid or body is not required, do nothing!
+      } else if (bodyRequired) {
+        throw ValidationException.ValidationExceptionFactory.generateWrongContentTypeExpected(contentType, null);
       }
 
-      routingContext.put("parsedParameters", parsedParameters);
-
+      if (routingContext.data().containsKey("parsedParameters")) {
+        ((RequestParametersImpl)routingContext.get("parsedParameters")).merge(parsedParameters);
+      } else {
+        routingContext.put("parsedParameters", parsedParameters);
+      }
       routingContext.next();
+
     } catch (ValidationException e) {
       routingContext.fail(e);
     }
@@ -108,7 +119,7 @@ public abstract class BaseValidationHandler implements ValidationHandler {
   private Map<String, RequestParameter> validateCookieParams(RoutingContext routingContext) throws ValidationException {
     // Validation process validate only params that are registered in the validation -> extra params are allowed
     if (!routingContext.request().headers().contains("Cookie"))
-      return null;
+      return new HashMap<>();
     QueryStringDecoder decoder = new QueryStringDecoder("/?" + routingContext.request().getHeader("Cookie")); // Some hack to reuse this object
     Map<String, List<String>> cookies = new HashMap<>();
     for (Map.Entry<String, List<String>> e : decoder.parameters().entrySet()) {
@@ -122,12 +133,17 @@ public abstract class BaseValidationHandler implements ValidationHandler {
     for (ParameterValidationRule rule : cookieParamsRules.values()) {
       String name = rule.getName().trim();
       if (cookies.containsKey(name)) {
-        RequestParameter parsedParam = rule.validateArrayParam(cookies.get(name));
-        if (parsedParams.containsKey(parsedParam.getName()))
-          parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
-        parsedParams.put(parsedParam.getName(), parsedParam);
+        List<String> p = cookies.remove(name);
+        if (p.size() != 0) {
+          RequestParameter parsedParam = rule.validateArrayParam(p);
+          if (parsedParams.containsKey(parsedParam.getName()))
+            parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
+          parsedParams.put(parsedParam.getName(), parsedParam);
+        } else {
+          throw ValidationException.ValidationExceptionFactory.generateNotMatchValidationException(name + " can't be empty");
+        }
       } else {
-        if (rule.allowEmptyValue() && rule.parameterTypeValidator().getDefault() != null) {
+        if (rule.parameterTypeValidator().getDefault() != null) {
           RequestParameter parsedParam = new RequestParameterImpl(name, rule.parameterTypeValidator().getDefault());
           if (parsedParams.containsKey(parsedParam.getName()))
             parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
@@ -137,21 +153,43 @@ public abstract class BaseValidationHandler implements ValidationHandler {
             ParameterLocation.COOKIE);
       }
     }
+    if (cookieAdditionalPropertiesValidator != null) {
+      for (Map.Entry<String, List<String>> e : cookies.entrySet()) {
+        try {
+          Map<String, RequestParameter> r = new HashMap<>();
+          r.put(e.getKey(), cookieAdditionalPropertiesValidator.isValidCollection(e.getValue()));
+          RequestParameter parsedParam = new RequestParameterImpl(cookieAdditionalPropertiesObjectPropertyName, r);
+          if (parsedParams.containsKey(cookieAdditionalPropertiesObjectPropertyName))
+            parsedParam = parsedParam.merge(parsedParams.get(cookieAdditionalPropertiesObjectPropertyName));
+          parsedParams.put(parsedParam.getName(), parsedParam);
+        } catch (ValidationException ex) {
+          ex.setParameterName(cookieAdditionalPropertiesObjectPropertyName);
+          e.setValue(e.getValue());
+          throw ex;
+        }
+      }
+    }
     return parsedParams;
   }
 
   private Map<String, RequestParameter> validateQueryParams(RoutingContext routingContext) throws ValidationException {
     // Validation process validate only params that are registered in the validation -> extra params are allowed
     Map<String, RequestParameter> parsedParams = new HashMap<>();
-    MultiMap queryParams = routingContext.queryParams();
+    MultiMap queryParams = new CaseInsensitiveHeaders().addAll(routingContext.queryParams());
     for (ParameterValidationRule rule : queryParamsRules.values()) {
       String name = rule.getName();
       if (queryParams.contains(name)) {
-        RequestParameter parsedParam = rule.validateArrayParam(queryParams.getAll(name));
-        if (parsedParams.containsKey(parsedParam.getName()))
-          parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
-        parsedParams.put(parsedParam.getName(), parsedParam);
-      } else if (rule.allowEmptyValue() && rule.parameterTypeValidator().getDefault() != null) {
+        List<String> p = queryParams.getAll(name);
+        queryParams.remove(name);
+        if (p.size() != 0) {
+          RequestParameter parsedParam = rule.validateArrayParam(p);
+          if (parsedParams.containsKey(parsedParam.getName()))
+            parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
+          parsedParams.put(parsedParam.getName(), parsedParam);
+        } else {
+          throw ValidationException.ValidationExceptionFactory.generateNotMatchValidationException(name + " can't be empty");
+        }
+      } else if (rule.parameterTypeValidator().getDefault() != null) {
         RequestParameter parsedParam = new RequestParameterImpl(name, rule.parameterTypeValidator().getDefault());
         if (parsedParams.containsKey(parsedParam.getName()))
           parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
@@ -159,6 +197,22 @@ public abstract class BaseValidationHandler implements ValidationHandler {
       } else if (!rule.isOptional())
         throw ValidationException.ValidationExceptionFactory.generateNotFoundValidationException(name,
           ParameterLocation.QUERY);
+    }
+    if (queryAdditionalPropertiesValidator != null) {
+      for (Map.Entry<String, String> e : queryParams.entries()) {
+        try {
+          Map<String, RequestParameter> r = new HashMap<>();
+          r.put(e.getKey(), queryAdditionalPropertiesValidator.isValid(e.getValue()));
+          RequestParameter parsedParam = new RequestParameterImpl(queryAdditionalPropertiesObjectPropertyName, r);
+          if (parsedParams.containsKey(queryAdditionalPropertiesObjectPropertyName))
+            parsedParam = parsedParam.merge(parsedParams.get(queryAdditionalPropertiesObjectPropertyName));
+          parsedParams.put(parsedParam.getName(), parsedParam);
+        } catch (ValidationException ex) {
+          ex.setParameterName(queryAdditionalPropertiesObjectPropertyName);
+          e.setValue(e.getValue());
+          throw ex;
+        }
+      }
     }
     return parsedParams;
   }
@@ -170,11 +224,16 @@ public abstract class BaseValidationHandler implements ValidationHandler {
     for (ParameterValidationRule rule : headerParamsRules.values()) {
       String name = rule.getName();
       if (headersParams.contains(name)) {
-        RequestParameter parsedParam = rule.validateArrayParam(headersParams.getAll(name));
-        if (parsedParams.containsKey(parsedParam.getName()))
-          parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
-        parsedParams.put(parsedParam.getName(), parsedParam);
-      } else if (rule.allowEmptyValue() && rule.parameterTypeValidator().getDefault() != null) {
+        List<String> p = headersParams.getAll(name);
+        if (p.size() != 0) {
+          RequestParameter parsedParam = rule.validateArrayParam(p);
+          if (parsedParams.containsKey(parsedParam.getName()))
+            parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
+          parsedParams.put(parsedParam.getName(), parsedParam);
+        } else {
+          throw ValidationException.ValidationExceptionFactory.generateNotMatchValidationException(name + " can't be empty");
+        }
+      } else if (rule.parameterTypeValidator().getDefault() != null) {
         RequestParameter parsedParam = new RequestParameterImpl(name, rule.parameterTypeValidator().getDefault());
         if (parsedParams.containsKey(parsedParam.getName()))
           parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
@@ -193,20 +252,16 @@ public abstract class BaseValidationHandler implements ValidationHandler {
     for (ParameterValidationRule rule : formParamsRules.values()) {
       String name = rule.getName();
       if (formParams.contains(name)) {
-        // Decode values because I assume they are text/plain in this phase
-        List<String> values = new ArrayList<>();
-        for (String s : formParams.getAll(name)) {
-          try {
-            values.add(URLDecoder.decode(s, "UTF-8"));
-          } catch (UnsupportedEncodingException e) {
-            e.printStackTrace();
-          }
-          RequestParameter parsedParam = rule.validateArrayParam(values);
+        List<String> p = formParams.getAll(name);
+        if (p.size() != 0) {
+          RequestParameter parsedParam = rule.validateArrayParam(p);
           if (parsedParams.containsKey(parsedParam.getName()))
             parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
           parsedParams.put(parsedParam.getName(), parsedParam);
+        } else {
+          throw ValidationException.ValidationExceptionFactory.generateNotMatchValidationException(name + " can't be empty");
         }
-      } else if (rule.allowEmptyValue() && rule.parameterTypeValidator().getDefault() != null) {
+      } else if (rule.parameterTypeValidator().getDefault() != null) {
         RequestParameter parsedParam = new RequestParameterImpl(name, rule.parameterTypeValidator().getDefault());
         if (parsedParams.containsKey(parsedParam.getName()))
           parsedParam = parsedParam.merge(parsedParams.get(parsedParam.getName()));
@@ -241,7 +296,7 @@ public abstract class BaseValidationHandler implements ValidationHandler {
 
   private boolean checkContentType(String contentType) {
     for (String ct : bodyFileRules) {
-      if (ct.equals(contentType)) return true;
+      if (contentType.contains(ct)) return true;
     }
     return false;
   }
@@ -279,10 +334,9 @@ public abstract class BaseValidationHandler implements ValidationHandler {
   }
 
   protected void addFormParamRule(ParameterValidationRule rule) {
-    if (!formParamsRules.containsKey(rule.getName())) {
+    if (!formParamsRules.containsKey(rule.getName()))
       formParamsRules.put(rule.getName(), rule);
-      expectedBodyNotEmpty = true;
-    }
+    bodyRequired = true;
   }
 
   protected void addHeaderParamRule(ParameterValidationRule rule) {
@@ -295,16 +349,30 @@ public abstract class BaseValidationHandler implements ValidationHandler {
 
   protected void addMultipartFileRule(String formName, String contentType) {
     if (!multipartFileRules.containsKey(formName)) multipartFileRules.put(formName, Pattern.compile(contentType));
-    expectedBodyNotEmpty = true;
+    bodyRequired = true;
   }
 
   protected void addBodyFileRule(String contentType) {
     bodyFileRules.add(contentType);
-    expectedBodyNotEmpty = true;
+    bodyRequired = true;
   }
 
   protected void setEntireBodyValidator(ParameterTypeValidator entireBodyValidator) {
     this.entireBodyValidator = entireBodyValidator;
-    expectedBodyNotEmpty = true;
+    bodyRequired = true;
   }
+
+  protected void setCookieAdditionalPropertyHandler(ParameterTypeValidator validator, String objectParameterName) {
+    this.cookieAdditionalPropertiesValidator = validator;
+    this.cookieAdditionalPropertiesObjectPropertyName = objectParameterName;
+  }
+  protected void setQueryAdditionalPropertyHandler(ParameterTypeValidator validator, String objectParameterName) {
+    this.queryAdditionalPropertiesValidator = validator;
+    this.queryAdditionalPropertiesObjectPropertyName = objectParameterName;
+  }
+
+  public boolean isBodyRequired() {
+    return bodyRequired;
+  }
+
 }

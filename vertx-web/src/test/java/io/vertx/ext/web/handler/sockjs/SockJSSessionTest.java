@@ -19,7 +19,6 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.test.core.TestUtils;
 import org.junit.Test;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
@@ -45,14 +44,14 @@ public class SockJSSessionTest extends SockJSTestBase {
         }
       }).start();
     });
-    client.get("/test/400/8ne8e94a/eventsource", resp -> {
+    client.getNow("/test/400/8ne8e94a/eventsource", onSuccess(resp -> {
       AtomicInteger count = new AtomicInteger();
       resp.handler(msg -> {
         if (count.incrementAndGet() == 400) {
           resp.request().connection().close();
         }
       });
-    }).end();
+    }));
     await();
   }
 
@@ -64,9 +63,7 @@ public class SockJSSessionTest extends SockJSTestBase {
     AtomicInteger serverReceived = new AtomicInteger();
     BooleanSupplier shallStop = () -> clientReceived.get() > numMsg * 256 && serverReceived.get() > numMsg * 256;
     sockJSHandler.socketHandler(socket -> {
-      socket.handler(msg -> {
-        serverReceived.addAndGet(msg.length());
-      });
+      socket.handler(msg -> serverReceived.addAndGet(msg.length()));
       socket.write("hello");
       new Thread(() -> {
         while (!shallStop.getAsBoolean()) {
@@ -79,16 +76,14 @@ public class SockJSSessionTest extends SockJSTestBase {
         }
       }).start();
     });
-    client.websocket("/test/400/8ne8e94a/websocket", ws -> {
-      ws.handler(msg -> {
-        clientReceived.addAndGet(msg.length());
-        ws.writeTextMessage("\"hello\"");
-        if (shallStop.getAsBoolean()) {
-          ws.handler(null);
-          complete();
-        }
-      });
-    });
+    client.websocket("/test/400/8ne8e94a/websocket", ws -> ws.handler(msg -> {
+      clientReceived.addAndGet(msg.length());
+      ws.writeTextMessage("\"hello\"");
+      if (shallStop.getAsBoolean()) {
+        ws.handler(null);
+        complete();
+      }
+    }));
     await();
   }
 
